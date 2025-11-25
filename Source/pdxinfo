@@ -1,0 +1,7 @@
+name=Spaceship Pomodoro
+author=Fred_Mackay
+description=Trade supremacy and productivity!
+bundleID=com.organization.package
+version=0.0.1
+buildNumber=1
+source=Source
