@@ -7,17 +7,27 @@ import "gameState"
 import "buySell"
 import "dock"
 import "travel"
+import "loanShark"
 
 local pd  <const> = playdate
 local gfx <const> = pd.graphics
 
+-- Seed RNG once (nice for your random market stock)
+math.randomseed(pd.getSecondsSinceEpoch())
+
 --------------------------------------------------
--- SCREEN STATE
+-- GLOBAL-ish STATE
 --------------------------------------------------
 
-local screenState  = "menu"   -- "menu", "story", "market", "buySell", "dock", "travel"
-local menuIndex    = 1
-local marketIndex  = 1
+local screenState      = "menu"   -- "menu", "story", "market", "buySell", "dock", "travel", "loanShark", "gameOver", "summary"
+local menuIndex        = 1
+local marketIndex      = 1
+
+local gameOverOutcome   = nil   -- "win" / "lose"
+local gameOverMenuIndex = 1
+local summaryMenuIndex  = 1     -- currently just for future expansion
+
+local hasSave           = gameState.hasSave()
 
 --------------------------------------------------
 -- STORY TEXT
@@ -50,6 +60,18 @@ local marketItems = {
 }
 
 --------------------------------------------------
+-- MENU HELPERS
+--------------------------------------------------
+
+local function getMenuItems()
+    if hasSave then
+        return { "Continue", "New Game", "Settings" }
+    else
+        return { "New Game", "Settings" }
+    end
+end
+
+--------------------------------------------------
 -- DRAW HELPERS
 --------------------------------------------------
 
@@ -65,18 +87,16 @@ local function drawMarketHeader()
     gfx.drawTextAligned(text, 200, 10, kTextAlignment.center)
 end
 
---------------------------------------------------
--- DRAW SCREENS
---------------------------------------------------
-
 local function drawMenuScreen()
     gfx.drawTextAligned("SPACE TRADER", 200, 40, kTextAlignment.center)
 
-    local yPlay = 100
-    local yQuit = 120
-
-    gfx.drawTextAligned((menuIndex == 1 and "> Play" or "  Play"), 200, yPlay, kTextAlignment.center)
-    gfx.drawTextAligned((menuIndex == 2 and "> Quit" or "  Quit"), 200, yQuit, kTextAlignment.center)
+    local items = getMenuItems()
+    local y = 100
+    for i, label in ipairs(items) do
+        local prefix = (i == menuIndex) and "> " or "  "
+        gfx.drawTextAligned(prefix .. label, 200, y, kTextAlignment.center)
+        y = y + 18
+    end
 
     gfx.drawTextAligned("Use ↑/↓ and A", 200, 210, kTextAlignment.center)
 end
@@ -97,7 +117,7 @@ local function drawMarketScreen()
     drawMarketHeader()
 
     gfx.drawLine(20, 30, 380, 30)
-    gfx.drawTextAligned("TERRA ORBITAL MARKET", 200, 40, kTextAlignment.center)
+    gfx.drawTextAligned("ORBITAL MARKET", 200, 40, kTextAlignment.center)
 
     local y = 80
     for i, item in ipairs(marketItems) do
@@ -107,6 +127,180 @@ local function drawMarketScreen()
     end
 
     gfx.drawTextAligned("A: Select   B: Back (later)", 200, 210, kTextAlignment.center)
+end
+
+--------------------------------------------------
+-- GAME OVER SCREEN
+--------------------------------------------------
+
+local function drawGameOverScreen()
+    local p       = gameState.player
+    local outcome = gameOverOutcome
+    local title
+    local detail
+
+    if outcome == "win" then
+        local daysUsed = (gameState.initialDays or 30) - p.daysLeft
+        if daysUsed < 0 then daysUsed = 0 end
+        title  = "DEBT REPAID!"
+        detail = string.format("You paid off the Syndicate in %d days.", daysUsed)
+    else
+        title  = "YOU FAILED..."
+        detail = "The Syndicate has repossessed your ship."
+    end
+
+    gfx.clear()
+    gfx.setColor(gfx.kColorBlack)
+
+    gfx.drawTextAligned(title, 200, 40, kTextAlignment.center)
+    gfx.drawTextAligned(detail, 200, 60, kTextAlignment.center)
+
+    local options
+    if outcome == "win" then
+        options = { "View Summary", "Endless Mode", "Main Menu" }
+    else
+        options = { "View Summary", "Main Menu" }
+    end
+
+    local y = 120
+    for i, label in ipairs(options) do
+        local prefix = (i == gameOverMenuIndex) and "> " or "  "
+        gfx.drawTextAligned(prefix .. label, 200, y, kTextAlignment.center)
+        y = y + 18
+    end
+
+    gfx.drawTextAligned("↑/↓ select   A: confirm", 200, 210, kTextAlignment.center)
+end
+
+local function updateGameOver()
+    local outcome = gameOverOutcome
+    local options
+
+    if outcome == "win" then
+        options = { "View Summary", "Endless Mode", "Main Menu" }
+    else
+        options = { "View Summary", "Main Menu" }
+    end
+
+    if pd.buttonJustPressed(pd.kButtonUp) then
+        gameOverMenuIndex = gameOverMenuIndex - 1
+        if gameOverMenuIndex < 1 then gameOverMenuIndex = #options end
+    elseif pd.buttonJustPressed(pd.kButtonDown) then
+        gameOverMenuIndex = gameOverMenuIndex + 1
+        if gameOverMenuIndex > #options then gameOverMenuIndex = 1 end
+    end
+
+    if pd.buttonJustPressed(pd.kButtonA) then
+        local choice = options[gameOverMenuIndex]
+
+        if choice == "View Summary" then
+            screenState = "summary"
+
+        elseif choice == "Endless Mode" then
+            gameState.isEndless     = true
+            gameState.gameOverState = nil
+            gameOverOutcome         = nil
+            -- you could clear history here or keep it
+            screenState = "market"
+
+        elseif choice == "Main Menu" then
+            gameState.save()
+            screenState       = "menu"
+            gameOverOutcome   = nil
+            gameOverMenuIndex = 1
+            hasSave           = gameState.hasSave()
+        end
+    end
+end
+
+--------------------------------------------------
+-- SUMMARY SCREEN (GRAPH)
+--------------------------------------------------
+
+local function drawSummaryScreen()
+    local history = gameState.history
+
+    gfx.clear()
+    gfx.setColor(gfx.kColorBlack)
+
+    gfx.drawTextAligned("GAME SUMMARY", 200, 10, kTextAlignment.center)
+
+    if #history < 2 then
+        gfx.drawTextAligned("Not enough data to draw graph.", 200, 120, kTextAlignment.center)
+        gfx.drawTextAligned("Press B to return to menu.", 200, 140, kTextAlignment.center)
+        return
+    end
+
+    -- find min/max net worth
+    local minNW = history[1].netWorth
+    local maxNW = history[1].netWorth
+    for _, h in ipairs(history) do
+        if h.netWorth < minNW then minNW = h.netWorth end
+        if h.netWorth > maxNW then maxNW = h.netWorth end
+    end
+    if maxNW == minNW then
+        maxNW = minNW + 1
+    end
+
+    local graphLeft   = 20
+    local graphTop    = 40
+    local graphWidth  = 360
+    local graphHeight = 120
+
+    gfx.drawRect(graphLeft, graphTop, graphWidth, graphHeight)
+
+    local prevX, prevY
+
+    for i, h in ipairs(history) do
+        local t   = (i - 1) / (#history - 1)
+        local x   = graphLeft + 1 + t * (graphWidth - 2)
+        local norm = (h.netWorth - minNW) / (maxNW - minNW)
+        local y   = graphTop + graphHeight - 2 - norm * (graphHeight - 4)
+
+        if prevX ~= nil then
+            gfx.drawLine(prevX, prevY, x, y)
+        end
+        prevX, prevY = x, y
+    end
+
+    local first = history[1]
+    local last  = history[#history]
+
+    gfx.drawText(
+        string.format("Start Net Worth: $%d", first.netWorth),
+        20, graphTop + graphHeight + 6
+    )
+    gfx.drawText(
+        string.format("End Net Worth:   $%d", last.netWorth),
+        20, graphTop + graphHeight + 20
+    )
+
+    gfx.drawTextAligned("B: Main Menu", 200, 210, kTextAlignment.center)
+end
+
+local function updateSummaryScreen()
+    if pd.buttonJustPressed(pd.kButtonB) then
+        screenState       = "menu"
+        gameOverOutcome   = nil
+        gameOverMenuIndex = 1
+        hasSave           = gameState.hasSave()
+    end
+end
+
+--------------------------------------------------
+-- COMMON GAME-OVER CHECK
+--------------------------------------------------
+
+local function checkForGameOver()
+    local outcome = gameState.checkGameOver and gameState.checkGameOver() or nil
+    if outcome ~= nil then
+        gameOverOutcome   = outcome
+        gameOverMenuIndex = 1
+        screenState       = "gameOver"
+        -- optional: gameState.save()
+        return true
+    end
+    return false
 end
 
 --------------------------------------------------
@@ -121,19 +315,48 @@ function playdate.update()
     -- MENU
     -----------------------------------
     if screenState == "menu" then
+        local items = getMenuItems()
+
         if pd.buttonJustPressed(pd.kButtonUp) then
             menuIndex = menuIndex - 1
-            if menuIndex < 1 then menuIndex = 2 end
+            if menuIndex < 1 then menuIndex = #items end
         end
 
         if pd.buttonJustPressed(pd.kButtonDown) then
             menuIndex = menuIndex + 1
-            if menuIndex > 2 then menuIndex = 1 end
+            if menuIndex > #items then menuIndex = 1 end
         end
 
         if pd.buttonJustPressed(pd.kButtonA) then
-            if menuIndex == 1 then
-                screenState = "story"
+            if not hasSave then
+                -- items = { New Game, Settings }
+                if menuIndex == 1 then
+                    gameState.reset()
+                    gameState.save()
+                    hasSave     = true
+                    screenState = "story"
+                    menuIndex   = 1
+                elseif menuIndex == 2 then
+                    -- Settings placeholder
+                end
+            else
+                -- items = { Continue, New Game, Settings }
+                if menuIndex == 1 then
+                    -- Continue
+                    if gameState.load() then
+                        screenState = "market"
+                    else
+                        hasSave = false
+                    end
+                elseif menuIndex == 2 then
+                    -- New Game
+                    gameState.reset()
+                    gameState.save()
+                    screenState = "story"
+                    menuIndex   = 1
+                elseif menuIndex == 3 then
+                    -- Settings placeholder
+                end
             end
         end
 
@@ -172,7 +395,6 @@ function playdate.update()
         end
 
         if pd.buttonJustPressed(pd.kButtonA) then
-            print("Market option selected:", marketIndex)
             if marketIndex == 1 then
                 buySell.enter("buy")
                 screenState = "buySell"
@@ -180,15 +402,19 @@ function playdate.update()
                 buySell.enter("sell")
                 screenState = "buySell"
             elseif marketIndex == 3 then
-                print("Entering travel screen")
                 travel.enter()
                 screenState = "travel"
             elseif marketIndex == 4 then
                 dock.enter()
                 screenState = "dock"
             elseif marketIndex == 5 then
-                -- Loan Shark (future)
+                loanShark.enter()
+                screenState = "loanShark"
             end
+        end
+
+        if checkForGameOver() then
+            return
         end
 
         gfx.clear()
@@ -203,6 +429,10 @@ function playdate.update()
     if screenState == "buySell" then
         buySell.update()
 
+        if checkForGameOver() then
+            return
+        end
+
         if buySell.exitRequested then
             screenState = "market"
         end
@@ -216,6 +446,10 @@ function playdate.update()
     -----------------------------------
     if screenState == "dock" then
         dock.update()
+
+        if checkForGameOver() then
+            return
+        end
 
         if dock.exitRequested then
             screenState = "market"
@@ -232,11 +466,52 @@ function playdate.update()
     if screenState == "travel" then
         travel.update()
 
+        if checkForGameOver() then
+            return
+        end
+
         if travel.exitRequested then
             screenState = "market"
         end
 
         travel.draw()
+        return
+    end
+
+    -----------------------------------
+    -- LOAN SHARK
+    -----------------------------------
+    if screenState == "loanShark" then
+        loanShark.update()
+
+        if checkForGameOver() then
+            return
+        end
+
+        if loanShark.exitRequested then
+            screenState = "market"
+        else
+            loanShark.draw()
+        end
+
+        return
+    end
+
+    -----------------------------------
+    -- GAME OVER
+    -----------------------------------
+    if screenState == "gameOver" then
+        updateGameOver()
+        drawGameOverScreen()
+        return
+    end
+
+    -----------------------------------
+    -- SUMMARY
+    -----------------------------------
+    if screenState == "summary" then
+        updateSummaryScreen()
+        drawSummaryScreen()
         return
     end
 end
