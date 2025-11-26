@@ -326,7 +326,7 @@ function playdate.update()
             menuIndex = menuIndex + 1
             if menuIndex > #items then menuIndex = 1 end
         end
-
+        
         if pd.buttonJustPressed(pd.kButtonA) then
             if not hasSave then
                 -- items = { New Game, Settings }
