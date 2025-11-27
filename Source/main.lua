@@ -23,6 +23,10 @@ local screenState      = "menu"   -- "menu", "story", "market", "buySell", "dock
 local menuIndex        = 1
 local marketIndex      = 1
 
+-- For crank+physics menu
+local menuVisualIndex  = 1.0      -- smoothed version of menuIndex
+local menuCrankAccum   = 0        -- accumulated crank degrees
+
 local gameOverOutcome   = nil   -- "win" / "lose"
 local gameOverMenuIndex = 1
 local summaryMenuIndex  = 1     -- currently just for future expansion
