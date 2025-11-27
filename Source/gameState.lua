@@ -343,7 +343,14 @@ function gameState.save()
         history     = gameState.history,
         isEndless   = gameState.isEndless,
     }
-    playdate.datastore.write(data, "playwait_save")
+    local ok, err = pcall(function()
+        playdate.datastore.write(data, "playwait_save")
+    end)
+
+    if not ok then
+        print("Save failed: " .. tostring(err))
+    end
+    
 end
 
 function gameState.load()
